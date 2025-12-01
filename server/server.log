@@ -1,7 +1,17 @@
-2025-11-03 11:22:04 [SERVER] starting...
-2025-11-03 11:22:04 [SERVER] listening on port 5555
-2025-11-03 11:22:07 [SERVER] new connection from 127.0.0.1 on socket 5
-2025-11-03 11:22:07 [RECV][fd=5] HELLO SERVER
-2025-11-03 11:22:07 [SEND][fd=5] OK: received "HELLO SERVER"
+2025-12-01 00:56:49 [SERVER] Starting...
+2025-12-01 00:56:49 [DB] Database initialized.
+2025-12-01 00:56:49 [SERVER] Listening on port 5555
+2025-12-01 00:56:55 [SERVER] New connection from 127.0.0.1 on socket 6
+2025-12-01 00:57:22 [RECV fd=6] PING
 
-2025-11-03 11:22:07 [SERVER] socket 5 disconnected
+2025-12-01 00:57:52 [RECV fd=6] REGISTER alice 123
+
+2025-12-01 00:58:20 [RECV fd=6] LOGIN alice 123
+
+2025-12-01 00:58:36 [RECV fd=6] LOGOUT alice 123
+
+2025-12-01 00:58:53 [RECV fd=6] LOGIN alice 1234
+
+2025-12-01 00:59:25 [RECV fd=6] REGISTER alice 123
+
+2025-12-01 00:59:33 [SERVER] socket 6 disconnected

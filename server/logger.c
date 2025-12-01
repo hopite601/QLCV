@@ -1,4 +1,4 @@
-// logger.c
+// logger.c ghi lại nhật ký log 
 #include <stdio.h>
 #include <stdarg.h>
 #include <time.h>

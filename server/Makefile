@@ -1,13 +1,13 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -O2
-TARGET = server
+LIBS = -lsqlite3
 
-SRC = server.c logger.c
+SRC = server.c logger.c handlers.c protocol.c database.c
 
-all: $(TARGET)
+all: server
 
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) $(SRC) -o $(TARGET)
+server: $(SRC)
+	$(CC) $(CFLAGS) $(SRC) -o server $(LIBS)
 
 clean:
-	rm -f $(TARGET) *.o server.log
+	rm -f server *.o server.log
