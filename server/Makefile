@@ -1,13 +1,14 @@
-CC = gcc
-CFLAGS = -Wall -Wextra -O2
-LIBS = -lsqlite3
+CC=gcc
+CFLAGS=-Wall -pthread
+LIBS=-lsqlite3
 
-SRC = server.c logger.c handlers.c protocol.c database.c
+SRCS=server.c handler.c db.c log.c
+OBJS=$(SRCS:.c=.o)
 
 all: server
 
-server: $(SRC)
-	$(CC) $(CFLAGS) $(SRC) -o server $(LIBS)
+server: $(OBJS)
+	$(CC) $(CFLAGS) -o server $(OBJS) $(LIBS)
 
 clean:
-	rm -f server *.o server.log
+	rm -f *.o server

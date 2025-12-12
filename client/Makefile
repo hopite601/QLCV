@@ -1,12 +1,13 @@
-CC = gcc
-CFLAGS = -Wall -Wextra -O2
-TARGET = client
-SRC = client.c
+CC=gcc
+CFLAGS=-Wall
 
-all: $(TARGET)
+SRCS=client.c ui.c
+OBJS=$(SRCS:.c=.o)
 
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) $(SRC) -o $(TARGET)
+all: client
+
+client: $(OBJS)
+	$(CC) $(CFLAGS) -o client $(OBJS)
 
 clean:
-	rm -f $(TARGET) *.o
+	rm -f *.o client

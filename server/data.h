@@ -13,7 +13,7 @@ typedef enum {
 typedef struct {
     int   id;
     char  username[64];
-    char  password[64]; // Tuần 1: placeholder; tuần 2 sẽ hash/DB
+    char  password[64];
 } User;
 
 typedef struct {
