@@ -529,7 +529,7 @@ static void on_tasks_project_changed(GtkComboBox *combo, gpointer user_data) {
     refresh_tasks(a);
     const char *pid = gtk_combo_box_text_get_active_text(a->tasks_project_combo);
     refresh_gantt(a, pid ? atoi(pid) : 0);
-    a->last_chat_id = 0; // reset chat when switching projects
+    // a->last_chat_id = 0; // reset chat when switching projects
 }
 
 static void on_btn_create_task(GtkButton *btn, gpointer user_data) {
@@ -738,7 +738,7 @@ static void on_btn_list_attachments(GtkButton *btn, gpointer user_data) {
 
 static gboolean poll_chat(gpointer user_data) {
     App *a = (App*)user_data;
-    const char *pid = gtk_combo_box_text_get_active_text(a->chat_project_combo);
+const char *pid = gtk_combo_box_get_active_id(GTK_COMBO_BOX(a->chat_project_combo));
     if (!pid) return TRUE;
 
     char cmd[128];
@@ -774,9 +774,23 @@ static gboolean poll_chat(gpointer user_data) {
     return TRUE;
 }
 
+static void chat_clear(App *a) {
+    GtkTextBuffer *b = gtk_text_view_get_buffer(a->chat_view);
+    gtk_text_buffer_set_text(b, "", -1);
+}
+
+static void on_chat_project_changed(GtkComboBox *combo, gpointer user_data) {
+    (void)combo;
+    App *a = (App*)user_data;
+
+    a->last_chat_id = 0;
+    chat_clear(a);
+    poll_chat(a); // load chat của project mới ngay
+}
+
 static void on_btn_send_chat(GtkButton *btn, gpointer user_data) {
     App *a = (App*)user_data;
-    const char *pid = gtk_combo_box_text_get_active_text(a->chat_project_combo);
+const char *pid = gtk_combo_box_get_active_id(GTK_COMBO_BOX(a->chat_project_combo));
     const char *msg = gtk_entry_get_text(a->chat_entry);
     if (!pid || !msg || !*msg) return;
 
@@ -889,6 +903,8 @@ static GtkWidget* build_main(App *a) {
     g_signal_connect(btn_create_project, "clicked", G_CALLBACK(on_btn_create_project), a);
     g_signal_connect(btn_invite, "clicked", G_CALLBACK(on_btn_invite), a);
     g_signal_connect(btn_refresh_p, "clicked", G_CALLBACK(on_btn_refresh_projects), a);
+    g_signal_connect(a->chat_project_combo, "changed",
+                 G_CALLBACK(on_chat_project_changed), a);
 
     gtk_notebook_append_page(GTK_NOTEBOOK(tabs), proj_box, gtk_label_new("Projects"));
 

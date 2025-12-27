@@ -187,7 +187,6 @@ static void on_project_invite(GtkButton *btn, gpointer user_data) {
     gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Username to invite");
 
     // fill projects into combo
-    // rebuild from store
     GtkTreeIter it;
     gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(app->project_store), &it);
     while (valid) {
@@ -240,7 +239,6 @@ static void tasks_load(App *app, int project_id) {
     char *saveptr = NULL;
     for (char *ln = strtok_r(copy, "\n", &saveptr); ln; ln = strtok_r(NULL, "\n", &saveptr)) {
         if (!*ln) continue;
-        // split by |
         char *parts[8] = {0};
         int k=0;
         char *sv2=NULL;
@@ -479,7 +477,6 @@ static gboolean gantt_draw_cb(GtkWidget *widget, cairo_t *cr, gpointer user_data
     cairo_move_to(cr, 10, 20);
     cairo_show_text(cr, "Gantt (simple) - tasks must have Start/End YYYY-MM-DD");
 
-    // simple rendering: each task line draw bar based on day index within min..max.
     if (!app->gantt_tasks || app->gantt_tasks->len == 0) {
         cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
         cairo_set_font_size(cr, 12);
@@ -488,7 +485,6 @@ static gboolean gantt_draw_cb(GtkWidget *widget, cairo_t *cr, gpointer user_data
         return FALSE;
     }
 
-    // parse dates to ordinal days
     int min_day = 2147483647, max_day = -2147483647;
     typedef struct { int id; char title[128]; char status[32]; char assignee[64]; int sday; int eday; } T;
     GArray *items = g_array_new(FALSE, FALSE, sizeof(T));
@@ -503,9 +499,9 @@ static gboolean gantt_draw_cb(GtkWidget *widget, cairo_t *cr, gpointer user_data
         T t; memset(&t,0,sizeof(t));
         t.id = atoi(parts[0]);
         snprintf(t.title, sizeof(t.title), "%s", parts[1]);
-        snprintf(t.status, sizeof(t.status), "%s", parts[2]+7); // after Status:
-        const char *sd = parts[3]+6; // after Start:
-        const char *ed = parts[4]+4; // after End:
+        snprintf(t.status, sizeof(t.status), "%s", parts[2]+7);
+        const char *sd = parts[3]+6;
+        const char *ed = parts[4]+4;
         snprintf(t.assignee, sizeof(t.assignee), "%s", parts[5]+9);
 
         int y,m,d;
@@ -535,7 +531,6 @@ static gboolean gantt_draw_cb(GtkWidget *widget, cairo_t *cr, gpointer user_data
     double width = a.width - left - 20;
     if (width < 100) width = 100;
 
-    // grid
     cairo_set_source_rgb(cr, 0.9,0.9,0.9);
     for (int g=0; g<=span; g++) {
         double x = left + (g*(width/span));
@@ -544,7 +539,6 @@ static gboolean gantt_draw_cb(GtkWidget *widget, cairo_t *cr, gpointer user_data
     }
     cairo_stroke(cr);
 
-    // tasks
     cairo_set_source_rgb(cr, 0,0,0);
     cairo_set_font_size(cr, 12);
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
@@ -553,14 +547,12 @@ static gboolean gantt_draw_cb(GtkWidget *widget, cairo_t *cr, gpointer user_data
         T t = g_array_index(items, T, i);
         double y = top + i*row_h;
 
-        // label
         char label[200];
         snprintf(label, sizeof(label), "#%d %s (%s)", t.id, t.title, t.status);
         cairo_set_source_rgb(cr, 0,0,0);
         cairo_move_to(cr, 10, y+12);
         cairo_show_text(cr, label);
 
-        // bar
         int s = (t.sday>0)? (t.sday - min_day) : 0;
         int e = (t.eday>0)? (t.eday - min_day) : s;
         if (e < s) e = s;
@@ -569,7 +561,6 @@ static gboolean gantt_draw_cb(GtkWidget *widget, cairo_t *cr, gpointer user_data
         double x2 = left + ((e+1)*(width/span));
         double by = y + 6;
 
-        // color-ish by status (still grayscale to keep simple)
         if (g_strcmp0(t.status, "DONE") == 0) cairo_set_source_rgb(cr, 0.2,0.2,0.2);
         else if (g_strcmp0(t.status, "IN_PROGRESS") == 0) cairo_set_source_rgb(cr, 0.4,0.4,0.4);
         else cairo_set_source_rgb(cr, 0.6,0.6,0.6);
@@ -585,26 +576,35 @@ static gboolean gantt_draw_cb(GtkWidget *widget, cairo_t *cr, gpointer user_data
 // -------------------- Chat tab --------------------
 static gboolean chat_poll(gpointer user_data) {
     App *app = user_data;
+
     int pid = combo_get_selected_project_id(GTK_COMBO_BOX_TEXT(app->combo_projects_chat));
+        g_print("chat_poll pid=%d last_chat_id=%d\n", pid, app->last_chat_id);
     if (pid <= 0) return TRUE;
 
+    // Chỉ lấy message mới hơn last_chat_id
     char line[128];
     snprintf(line, sizeof(line), "%s|%d|%d\n", CMD_LIST_CHAT, pid, app->last_chat_id);
+
     char payload[BUF_SIZE] = {0};
     net_request(app->sockfd, line, payload, sizeof(payload));
+
     if (!payload[0]) return TRUE;
 
-    // lines: id|username|content|created_at
     char *copy = g_strdup(payload);
-    char *saveptr=NULL;
-    for (char *ln=strtok_r(copy,"\n",&saveptr); ln; ln=strtok_r(NULL,"\n",&saveptr)) {
+    char *saveptr = NULL;
+    for (char *ln = strtok_r(copy, "\n", &saveptr); ln; ln = strtok_r(NULL, "\n", &saveptr)) {
         if (!*ln) continue;
+
         char *tmp = g_strdup(ln);
-        char *p[4]={0}; int k=0; char *sv=NULL;
-        for (char *x=strtok_r(tmp,"|",&sv); x && k<4; x=strtok_r(NULL,"|",&sv)) p[k++]=x;
-        if (k==4) {
-            int id = atoi(p[0]);
-            if (id > app->last_chat_id) app->last_chat_id = id;
+        char *p[4] = {0}; int k = 0; char *sv = NULL;
+        for (char *x = strtok_r(tmp, "|", &sv); x && k < 4; x = strtok_r(NULL, "|", &sv))
+            p[k++] = x;
+
+        if (k == 4) {
+            int msg_id = atoi(p[0]);
+            if (msg_id > app->last_chat_id)
+                app->last_chat_id = msg_id;
+
             char msg[1024];
             snprintf(msg, sizeof(msg), "[%s] %s: %s\n", p[3], p[1], p[2]);
             GtkTextIter end;
@@ -614,13 +614,13 @@ static gboolean chat_poll(gpointer user_data) {
         g_free(tmp);
     }
     g_free(copy);
-
     return TRUE;
 }
 
 static void on_chat_send(GtkButton *btn, gpointer user_data) {
     (void)btn;
     App *app = user_data;
+
     int pid = combo_get_selected_project_id(GTK_COMBO_BOX_TEXT(app->combo_projects_chat));
     const char *content = gtk_entry_get_text(GTK_ENTRY(app->entry_chat));
     if (pid <= 0) { show_error(GTK_WINDOW(app->main_win), "Select a project"); return; }
@@ -632,16 +632,21 @@ static void on_chat_send(GtkButton *btn, gpointer user_data) {
     int code = net_request(app->sockfd, line, payload, sizeof(payload));
     if (code != 0) show_error(GTK_WINDOW(app->main_win), payload[0] ? payload : "Send chat failed");
     gtk_entry_set_text(GTK_ENTRY(app->entry_chat), "");
-    // immediate poll
+
+    // Lấy ngay message mới (id > last_chat_id cũ)
     chat_poll(app);
 }
 
 static void on_chat_project_changed(GtkComboBox *combo, gpointer user_data) {
     App *app = user_data;
     (void)combo;
-    app->last_chat_id = 0;
+
+    // XÓA SẠCH chat cũ
     gtk_text_buffer_set_text(app->chat_buffer, "", -1);
+    // Reset để project mới load lại từ đầu
+    app->last_chat_id = 0;
 }
+
 
 // -------------------- Build UI --------------------
 static GtkWidget* build_projects_tab(App *app) {
@@ -802,13 +807,15 @@ static void build_main_window(App *app) {
     app->gantt_tasks = g_ptr_array_new();
 
     projects_load(app);
-    // initial loads
+
     int pid = combo_get_selected_project_id(GTK_COMBO_BOX_TEXT(app->combo_projects_tasks));
     tasks_load(app, pid);
     gantt_load(app, combo_get_selected_project_id(GTK_COMBO_BOX_TEXT(app->combo_projects_gantt)));
 
+    app->last_chat_id = 0;
+
     // poll chat every 1s
-    g_timeout_add(1000, chat_poll, app);
+    g_timeout_add(1000, chat_poll, app);   // [web:57]
 
     gtk_widget_show_all(app->main_win);
 }
