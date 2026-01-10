@@ -30,4 +30,41 @@
 
 #define CMD_LIST_TASK_GANTT      "LIST_TASK_GANTT"      // LIST_TASK_GANTT|project_id
 
+// ===================== REPORTS =====================
+// Report is tied to a project.
+// ADD_REPORT|project_id|title|description
+#define CMD_ADD_REPORT              "ADD_REPORT"
+
+// LIST_REPORTS|project_id
+#define CMD_LIST_REPORTS            "LIST_REPORTS"
+
+// GET_REPORT|report_id
+#define CMD_GET_REPORT              "GET_REPORT"
+
+// UPDATE_REPORT|report_id|title|description
+#define CMD_UPDATE_REPORT           "UPDATE_REPORT"
+
+// DELETE_REPORT|report_id
+#define CMD_DELETE_REPORT           "DELETE_REPORT"
+
+// ===================== REPORT COMMENTS =====================
+// ADD_REPORT_COMMENT|report_id|content
+#define CMD_ADD_REPORT_COMMENT      "ADD_REPORT_COMMENT"
+
+// LIST_REPORT_COMMENTS|report_id
+#define CMD_LIST_REPORT_COMMENTS    "LIST_REPORT_COMMENTS"
+
+// DELETE_REPORT_COMMENT|comment_id
+#define CMD_DELETE_REPORT_COMMENT   "DELETE_REPORT_COMMENT"
+
+// ===================== REPORT FILES =====================
+// ADD_REPORT_FILE|report_id|filename|filepath
+#define CMD_ADD_REPORT_FILE         "ADD_REPORT_FILE"
+
+// LIST_REPORT_FILES|report_id
+#define CMD_LIST_REPORT_FILES       "LIST_REPORT_FILES"
+
+// DELETE_REPORT_FILE|file_id
+#define CMD_DELETE_REPORT_FILE      "DELETE_REPORT_FILE"
+
 #endif

@@ -88,6 +88,36 @@ int db_init(const char *path) {
         return 0;
     }
 
+        const char *sql3 =
+        "CREATE TABLE IF NOT EXISTS reports ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "project_id INTEGER,"
+        "title TEXT,"
+        "description TEXT DEFAULT '',"
+        "created_by INTEGER,"
+        "created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+        ");"
+        "CREATE TABLE IF NOT EXISTS report_comments ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "report_id INTEGER,"
+        "user_id INTEGER,"
+        "content TEXT,"
+        "created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+        ");"
+        "CREATE TABLE IF NOT EXISTS report_files ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "report_id INTEGER,"
+        "filename TEXT,"
+        "filepath TEXT,"
+        "created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+        ");";
+
+    if (sqlite3_exec(db, sql3, NULL, NULL, &err) != SQLITE_OK) {
+        printf("DB init error: %s\n", err);
+        sqlite3_free(err);
+        return 0;
+    }
+
     // Backward compatible: if an old DB existed without new columns, try ALTER and ignore errors.
     const char *alter_sql[] = {
         // users
@@ -308,6 +338,22 @@ int db_get_task_project_id(int task_id, int *project_id) {
         "SELECT project_id FROM tasks WHERE id=?",
         -1, &st, NULL);
     sqlite3_bind_int(st, 1, task_id);
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        *project_id = sqlite3_column_int(st, 0);
+        sqlite3_finalize(st);
+        return 1;
+    }
+    sqlite3_finalize(st);
+    return 0;
+}
+
+int db_get_report_project_id(int report_id, int *project_id) {
+    sqlite3_stmt *st;
+    sqlite3_prepare_v2(db,
+        "SELECT project_id FROM reports WHERE id=?",
+        -1, &st, NULL);
+    sqlite3_bind_int(st, 1, report_id);
     int rc = sqlite3_step(st);
     if (rc == SQLITE_ROW) {
         *project_id = sqlite3_column_int(st, 0);
@@ -643,3 +689,200 @@ int db_assign_task(int task_id, int user_id) {
 
     return rc == SQLITE_DONE;
 }
+
+/* =====================================
+                REPORTS
+===================================== */
+
+int db_add_report(int project_id, int created_by, const char *title, const char *desc, int *report_id) {
+    sqlite3_stmt *st;
+    sqlite3_prepare_v2(db,
+        "INSERT INTO reports(project_id,title,description,created_by) VALUES(?,?,?,?)",
+        -1, &st, NULL);
+    sqlite3_bind_int(st, 1, project_id);
+    sqlite3_bind_text(st, 2, title, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 3, desc ? desc : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 4, created_by);
+
+    if (sqlite3_step(st) != SQLITE_DONE) { sqlite3_finalize(st); return 0; }
+    *report_id = (int)sqlite3_last_insert_rowid(db);
+    sqlite3_finalize(st);
+    return 1;
+}
+
+int db_list_reports(int project_id, char *out, int out_size) {
+    sqlite3_stmt *st;
+    const char *sql =
+        "SELECT r.id, r.title, IFNULL(u.username,'?'), r.created_at "
+        "FROM reports r LEFT JOIN users u ON r.created_by = u.id "
+        "WHERE r.project_id = ? ORDER BY r.id DESC;";
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int(st, 1, project_id);
+
+    out[0] = '\0';
+    char buf[768];
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        snprintf(buf, sizeof(buf), "%d|%s|By:%s|At:%s\n",
+            sqlite3_column_int(st,0),
+            (const char*)sqlite3_column_text(st,1),
+            (const char*)sqlite3_column_text(st,2),
+            (const char*)sqlite3_column_text(st,3));
+        strncat(out, buf, out_size - (int)strlen(out) - 1);
+    }
+    sqlite3_finalize(st);
+    return 1;
+}
+
+int db_get_report(int report_id, char *out, int out_size) {
+    sqlite3_stmt *st;
+    const char *sql =
+        "SELECT r.id, r.project_id, r.title, r.description, IFNULL(u.username,'?'), r.created_at "
+        "FROM reports r LEFT JOIN users u ON r.created_by = u.id "
+        "WHERE r.id = ?;";
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int(st, 1, report_id);
+
+    if (sqlite3_step(st) != SQLITE_ROW) { sqlite3_finalize(st); return 0; }
+
+    snprintf(out, out_size, "%d|%d|%s|%s|By:%s|At:%s\n",
+        sqlite3_column_int(st,0),
+        sqlite3_column_int(st,1),
+        (const char*)sqlite3_column_text(st,2),
+        (const char*)sqlite3_column_text(st,3),
+        (const char*)sqlite3_column_text(st,4),
+        (const char*)sqlite3_column_text(st,5));
+
+    sqlite3_finalize(st);
+    return 1;
+}
+
+int db_update_report(int report_id, const char *title, const char *desc) {
+    sqlite3_stmt *st;
+    const char *sql = "UPDATE reports SET title=?, description=? WHERE id=?";
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_text(st, 1, title, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, desc ? desc : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 3, report_id);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
+int db_delete_report(int report_id) {
+    // delete children first to keep DB tidy
+    sqlite3_stmt *st;
+
+    sqlite3_prepare_v2(db, "DELETE FROM report_comments WHERE report_id=?", -1, &st, NULL);
+    sqlite3_bind_int(st, 1, report_id);
+    sqlite3_step(st);
+    sqlite3_finalize(st);
+
+    sqlite3_prepare_v2(db, "DELETE FROM report_files WHERE report_id=?", -1, &st, NULL);
+    sqlite3_bind_int(st, 1, report_id);
+    sqlite3_step(st);
+    sqlite3_finalize(st);
+
+    sqlite3_prepare_v2(db, "DELETE FROM reports WHERE id=?", -1, &st, NULL);
+    sqlite3_bind_int(st, 1, report_id);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
+/* =====================================
+            REPORT COMMENTS
+===================================== */
+
+int db_add_report_comment(int report_id, int user_id, const char *content) {
+    sqlite3_stmt *st;
+    const char *sql = "INSERT INTO report_comments(report_id,user_id,content) VALUES(?,?,?)";
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int(st, 1, report_id);
+    sqlite3_bind_int(st, 2, user_id);
+    sqlite3_bind_text(st, 3, content, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
+int db_list_report_comments(int report_id, char *out, int out_size) {
+    sqlite3_stmt *st;
+    const char *sql =
+        "SELECT c.id, IFNULL(u.username,'?'), c.content, c.created_at "
+        "FROM report_comments c LEFT JOIN users u ON c.user_id=u.id "
+        "WHERE c.report_id=? ORDER BY c.id ASC;";
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int(st, 1, report_id);
+
+    out[0] = '\0';
+    char buf[768];
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        snprintf(buf, sizeof(buf), "%d|%s|%s|%s\n",
+            sqlite3_column_int(st,0),
+            (const char*)sqlite3_column_text(st,1),
+            (const char*)sqlite3_column_text(st,2),
+            (const char*)sqlite3_column_text(st,3));
+        strncat(out, buf, out_size - (int)strlen(out) - 1);
+    }
+    sqlite3_finalize(st);
+    return 1;
+}
+
+int db_delete_report_comment(int comment_id) {
+    sqlite3_stmt *st;
+    const char *sql = "DELETE FROM report_comments WHERE id=?";
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int(st, 1, comment_id);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
+/* =====================================
+                REPORT FILES
+===================================== */
+
+int db_add_report_file(int report_id, const char *filename, const char *filepath) {
+    sqlite3_stmt *st;
+    const char *sql = "INSERT INTO report_files(report_id,filename,filepath) VALUES(?,?,?)";
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int(st, 1, report_id);
+    sqlite3_bind_text(st, 2, filename, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 3, filepath, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
+int db_list_report_files(int report_id, char *out, int out_size) {
+    sqlite3_stmt *st;
+    const char *sql =
+        "SELECT f.id, f.filename, f.filepath, f.created_at "
+        "FROM report_files f WHERE f.report_id=? ORDER BY f.id ASC;";
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int(st, 1, report_id);
+
+    out[0] = '\0';
+    char buf[768];
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        snprintf(buf, sizeof(buf), "%d|%s|%s|%s\n",
+            sqlite3_column_int(st,0),
+            (const char*)sqlite3_column_text(st,1),
+            (const char*)sqlite3_column_text(st,2),
+            (const char*)sqlite3_column_text(st,3));
+        strncat(out, buf, out_size - (int)strlen(out) - 1);
+    }
+    sqlite3_finalize(st);
+    return 1;
+}
+
+int db_delete_report_file(int file_id) {
+    sqlite3_stmt *st;
+    const char *sql = "DELETE FROM report_files WHERE id=?";
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int(st, 1, file_id);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+

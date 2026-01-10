@@ -49,4 +49,23 @@ int db_list_attachments(int task_id, char *out, int out_size);
 int db_add_chat(int project_id, int user_id, const char *content);
 int db_list_chat(int project_id, int after_id, char *out, int out_size);
 
+// Reports
+int db_add_report(int project_id, int created_by, const char *title, const char *desc, int *report_id);
+int db_list_reports(int project_id, char *out, int out_size);
+int db_get_report(int report_id, char *out, int out_size);
+int db_get_report_project_id(int report_id, int *project_id);
+int db_update_report(int report_id, const char *title, const char *desc);
+int db_delete_report(int report_id);
+
+// Report comments
+int db_add_report_comment(int report_id, int user_id, const char *content);
+int db_list_report_comments(int report_id, char *out, int out_size);
+int db_delete_report_comment(int comment_id);
+
+// Report files
+int db_add_report_file(int report_id, const char *filename, const char *filepath);
+int db_list_report_files(int report_id, char *out, int out_size);
+int db_delete_report_file(int file_id);
+
+
 #endif

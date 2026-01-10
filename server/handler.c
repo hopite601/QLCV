@@ -27,6 +27,22 @@ static void trim_trailing(char *s) {
     }
 }
 
+static int ensure_task_member_or_owner(ClientInfo *ci, int task_id, int *out_pid) {
+    int pid = 0;
+    if (!db_get_task_project_id(task_id, &pid)) return 0;
+    if (!db_is_project_member(pid, ci->user_id) && !db_is_project_owner(pid, ci->user_id)) return 0;
+    if (out_pid) *out_pid = pid;
+    return 1;
+}
+
+static int ensure_report_member_or_owner(ClientInfo *ci, int report_id, int *out_pid) {
+    int pid = 0;
+    if (!db_get_report_project_id(report_id, &pid)) return 0;
+    if (!db_is_project_member(pid, ci->user_id) && !db_is_project_owner(pid, ci->user_id)) return 0;
+    if (out_pid) *out_pid = pid;
+    return 1;
+}
+
 void *client_handler(void *arg) {
     ClientInfo *ci = (ClientInfo *)arg;
     char buffer[BUF_SIZE];
@@ -398,63 +414,232 @@ void *client_handler(void *arg) {
         }
 
         /* ==========================
-              COMMENTS
-        ========================== */
-        else if (strcmp(cmd, CMD_ADD_COMMENT) == 0) {
-            char *taskID_str = strtok(NULL, "|");
-            char *content = strtok(NULL, "|\n");
-            if (!taskID_str || !content) {
-                send_response(ci->sockfd, 1, "Invalid ADD_COMMENT format");
-                continue;
-            }
-            if (db_add_comment(atoi(taskID_str), ci->user_id, content))
-                send_response(ci->sockfd, 0, "Comment added");
-            else
-                send_response(ci->sockfd, 1, "Add comment failed");
-        }
-        else if (strcmp(cmd, CMD_LIST_COMMENTS) == 0) {
-            char *taskID_str = strtok(NULL, "|\n");
-            if (!taskID_str) {
-                send_response(ci->sockfd, 1, "Invalid LIST_COMMENTS format");
-                continue;
-            }
-            char list[4096] = {0};
-            db_list_comments(atoi(taskID_str), list, sizeof(list));
-            if (strlen(list) == 0)
-                send_response(ci->sockfd, 0, "No comments");
-            else
-                send_response(ci->sockfd, 0, list);
-        }
+      COMMENTS
+========================== */
+else if (strcmp(cmd, CMD_ADD_COMMENT) == 0) {
+    char *taskID_str = strtok(NULL, "|");
+    char *content = strtok(NULL, "|\n");
+    if (!taskID_str || !content) {
+        send_response(ci->sockfd, 1, "Invalid ADD_COMMENT format");
+        continue;
+    }
+
+    int tid = atoi(taskID_str);
+    if (!ensure_task_member_or_owner(ci, tid, NULL)) {
+        send_response(ci->sockfd, 1, "Not authorized");
+        continue;
+    }
+
+    if (db_add_comment(tid, ci->user_id, content))
+        send_response(ci->sockfd, 0, "Comment added");
+    else
+        send_response(ci->sockfd, 1, "Add comment failed");
+}
+else if (strcmp(cmd, CMD_LIST_COMMENTS) == 0) {
+    char *taskID_str = strtok(NULL, "|\n");
+    if (!taskID_str) {
+        send_response(ci->sockfd, 1, "Invalid LIST_COMMENTS format");
+        continue;
+    }
+
+    int tid = atoi(taskID_str);
+    if (!ensure_task_member_or_owner(ci, tid, NULL)) {
+        send_response(ci->sockfd, 1, "Not authorized");
+        continue;
+    }
+
+    char list[4096] = {0};
+    db_list_comments(tid, list, sizeof(list));
+    if (strlen(list) == 0)
+        send_response(ci->sockfd, 0, "No comments");
+    else
+        send_response(ci->sockfd, 0, list);
+}
 
         /* ==========================
-              ATTACHMENTS
-        ========================== */
-        else if (strcmp(cmd, CMD_ADD_ATTACHMENT) == 0) {
-            char *taskID_str = strtok(NULL, "|");
-            char *filename = strtok(NULL, "|");
-            char *filepath = strtok(NULL, "|\n");
-            if (!taskID_str || !filename || !filepath) {
-                send_response(ci->sockfd, 1, "Invalid ADD_ATTACHMENT format");
-                continue;
-            }
-            if (db_add_attachment(atoi(taskID_str), filename, filepath))
-                send_response(ci->sockfd, 0, "Attachment added");
-            else
-                send_response(ci->sockfd, 1, "Add attachment failed");
-        }
-        else if (strcmp(cmd, CMD_LIST_ATTACHMENTS) == 0) {
-            char *taskID_str = strtok(NULL, "|\n");
-            if (!taskID_str) {
-                send_response(ci->sockfd, 1, "Invalid LIST_ATTACHMENTS format");
-                continue;
-            }
-            char list[4096] = {0};
-            db_list_attachments(atoi(taskID_str), list, sizeof(list));
-            if (strlen(list) == 0)
-                send_response(ci->sockfd, 0, "No attachments");
-            else
-                send_response(ci->sockfd, 0, list);
-        }
+      ATTACHMENTS
+========================== */
+else if (strcmp(cmd, CMD_ADD_ATTACHMENT) == 0) {
+    char *taskID_str = strtok(NULL, "|");
+    char *filename = strtok(NULL, "|");
+    char *filepath = strtok(NULL, "|\n");
+    if (!taskID_str || !filename || !filepath) {
+        send_response(ci->sockfd, 1, "Invalid ADD_ATTACHMENT format");
+        continue;
+    }
+
+    int tid = atoi(taskID_str);
+    if (!ensure_task_member_or_owner(ci, tid, NULL)) {
+        send_response(ci->sockfd, 1, "Not authorized");
+        continue;
+    }
+
+    if (db_add_attachment(tid, filename, filepath))
+        send_response(ci->sockfd, 0, "Attachment added");
+    else
+        send_response(ci->sockfd, 1, "Add attachment failed");
+}
+else if (strcmp(cmd, CMD_LIST_ATTACHMENTS) == 0) {
+    char *taskID_str = strtok(NULL, "|\n");
+    if (!taskID_str) {
+        send_response(ci->sockfd, 1, "Invalid LIST_ATTACHMENTS format");
+        continue;
+    }
+
+    int tid = atoi(taskID_str);
+    if (!ensure_task_member_or_owner(ci, tid, NULL)) {
+        send_response(ci->sockfd, 1, "Not authorized");
+        continue;
+    }
+
+    char list[4096] = {0};
+    db_list_attachments(tid, list, sizeof(list));
+    if (strlen(list) == 0)
+        send_response(ci->sockfd, 0, "No attachments");
+    else
+        send_response(ci->sockfd, 0, list);
+}
+
+/* ==========================
+            REPORTS
+========================== */
+else if (strcmp(cmd, CMD_ADD_REPORT) == 0) {
+    char *pid_str = strtok(NULL, "|");
+    char *title = strtok(NULL, "|");
+    char *desc = strtok(NULL, "|\n"); // allow '|' in desc? (hiện chưa)
+    if (!pid_str || !title || !desc) {
+        send_response(ci->sockfd, 1, "Invalid ADD_REPORT format");
+        continue;
+    }
+    int pid = atoi(pid_str);
+    if (!db_is_project_owner(pid, ci->user_id)) {
+        send_response(ci->sockfd, 1, "Only project owner can add report");
+        continue;
+    }
+    int rid = 0;
+    if (db_add_report(pid, ci->user_id, title, desc, &rid))
+        send_response(ci->sockfd, 0, "Report created");
+    else
+        send_response(ci->sockfd, 1, "Create report failed");
+}
+else if (strcmp(cmd, CMD_LIST_REPORTS) == 0) {
+    char *pid_str = strtok(NULL, "|\n");
+    if (!pid_str) {
+        send_response(ci->sockfd, 1, "Invalid LIST_REPORTS format");
+        continue;
+    }
+    int pid = atoi(pid_str);
+    if (!db_is_project_member(pid, ci->user_id) && !db_is_project_owner(pid, ci->user_id)) {
+        send_response(ci->sockfd, 1, "Not authorized");
+        continue;
+    }
+    char list[4096] = {0};
+    db_list_reports(pid, list, sizeof(list));
+    if (!list[0]) send_response(ci->sockfd, 0, "No reports");
+    else send_response(ci->sockfd, 0, list);
+}
+else if (strcmp(cmd, CMD_GET_REPORT) == 0) {
+    char *rid_str = strtok(NULL, "|\n");
+    if (!rid_str) { send_response(ci->sockfd, 1, "Invalid GET_REPORT format"); continue; }
+    int rid = atoi(rid_str);
+    if (!ensure_report_member_or_owner(ci, rid, NULL)) {
+        send_response(ci->sockfd, 1, "Not authorized");
+        continue;
+    }
+    char out[4096] = {0};
+    if (db_get_report(rid, out, sizeof(out)) && out[0])
+        send_response(ci->sockfd, 0, out);
+    else
+        send_response(ci->sockfd, 1, "Report not found");
+}
+else if (strcmp(cmd, CMD_UPDATE_REPORT) == 0) {
+    char *rid_str = strtok(NULL, "|");
+    char *title = strtok(NULL, "|");
+    char *desc = strtok(NULL, "|\n");
+    if (!rid_str || !title || !desc) {
+        send_response(ci->sockfd, 1, "Invalid UPDATE_REPORT format");
+        continue;
+    }
+    int rid = atoi(rid_str);
+    int pid = 0;
+    if (!ensure_report_member_or_owner(ci, rid, &pid)) { send_response(ci->sockfd, 1, "Not authorized"); continue; }
+    if (!db_is_project_owner(pid, ci->user_id)) { send_response(ci->sockfd, 1, "Only project owner can update report"); continue; }
+
+    if (db_update_report(rid, title, desc))
+        send_response(ci->sockfd, 0, "Report updated");
+    else
+        send_response(ci->sockfd, 1, "Update report failed");
+}
+else if (strcmp(cmd, CMD_DELETE_REPORT) == 0) {
+    char *rid_str = strtok(NULL, "|\n");
+    if (!rid_str) { send_response(ci->sockfd, 1, "Invalid DELETE_REPORT format"); continue; }
+    int rid = atoi(rid_str);
+    int pid = 0;
+    if (!ensure_report_member_or_owner(ci, rid, &pid)) { send_response(ci->sockfd, 1, "Not authorized"); continue; }
+    if (!db_is_project_owner(pid, ci->user_id)) { send_response(ci->sockfd, 1, "Only project owner can delete report"); continue; }
+
+    if (db_delete_report(rid))
+        send_response(ci->sockfd, 0, "Report deleted");
+    else
+        send_response(ci->sockfd, 1, "Delete report failed");
+}
+
+/* ==========================
+        REPORT COMMENTS
+========================== */
+else if (strcmp(cmd, CMD_ADD_REPORT_COMMENT) == 0) {
+    char *rid_str = strtok(NULL, "|");
+    char *content = strtok(NULL, "|\n");
+    if (!rid_str || !content) { send_response(ci->sockfd, 1, "Invalid ADD_REPORT_COMMENT format"); continue; }
+    int rid = atoi(rid_str);
+    if (!ensure_report_member_or_owner(ci, rid, NULL)) { send_response(ci->sockfd, 1, "Not authorized"); continue; }
+
+    if (db_add_report_comment(rid, ci->user_id, content))
+        send_response(ci->sockfd, 0, "Report comment added");
+    else
+        send_response(ci->sockfd, 1, "Add report comment failed");
+}
+else if (strcmp(cmd, CMD_LIST_REPORT_COMMENTS) == 0) {
+    char *rid_str = strtok(NULL, "|\n");
+    if (!rid_str) { send_response(ci->sockfd, 1, "Invalid LIST_REPORT_COMMENTS format"); continue; }
+    int rid = atoi(rid_str);
+    if (!ensure_report_member_or_owner(ci, rid, NULL)) { send_response(ci->sockfd, 1, "Not authorized"); continue; }
+
+    char list[4096] = {0};
+    db_list_report_comments(rid, list, sizeof(list));
+    if (!list[0]) send_response(ci->sockfd, 0, "No comments");
+    else send_response(ci->sockfd, 0, list);
+}
+
+/* ==========================
+        REPORT FILES
+========================== */
+else if (strcmp(cmd, CMD_ADD_REPORT_FILE) == 0) {
+    char *rid_str = strtok(NULL, "|");
+    char *filename = strtok(NULL, "|");
+    char *filepath = strtok(NULL, "|\n");
+    if (!rid_str || !filename || !filepath) { send_response(ci->sockfd, 1, "Invalid ADD_REPORT_FILE format"); continue; }
+    int rid = atoi(rid_str);
+    int pid = 0;
+    if (!ensure_report_member_or_owner(ci, rid, &pid)) { send_response(ci->sockfd, 1, "Not authorized"); continue; }
+    if (!db_is_project_owner(pid, ci->user_id)) { send_response(ci->sockfd, 1, "Only project owner can add report file"); continue; }
+
+    if (db_add_report_file(rid, filename, filepath))
+        send_response(ci->sockfd, 0, "Report file added");
+    else
+        send_response(ci->sockfd, 1, "Add report file failed");
+}
+else if (strcmp(cmd, CMD_LIST_REPORT_FILES) == 0) {
+    char *rid_str = strtok(NULL, "|\n");
+    if (!rid_str) { send_response(ci->sockfd, 1, "Invalid LIST_REPORT_FILES format"); continue; }
+    int rid = atoi(rid_str);
+    if (!ensure_report_member_or_owner(ci, rid, NULL)) { send_response(ci->sockfd, 1, "Not authorized"); continue; }
+
+    char list[4096] = {0};
+    db_list_report_files(rid, list, sizeof(list));
+    if (!list[0]) send_response(ci->sockfd, 0, "No files");
+    else send_response(ci->sockfd, 0, list);
+}
 
         /* ==========================
                  CHAT

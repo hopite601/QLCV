@@ -245,6 +245,7 @@ static void refresh_tasks(App *a) {
 
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "%s|%s\n", CMD_LIST_TASK, pid);
+
     char payload[4096] = {0};
     int code = net_request(a->sockfd, cmd, payload, sizeof(payload));
 
@@ -256,49 +257,57 @@ static void refresh_tasks(App *a) {
     }
     if (!payload[0] || strcmp(payload, "No tasks") == 0) return;
 
-    // expected: id|title|Assignee:name|Status:...|Start:...|End:...
+    // expected: id|title|Assignee:name|Status:...|Progress:n|Start:...|End:...
     char *dup = g_strdup(payload);
     char *save = NULL;
+
     for (char *line = strtok_r(dup, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
         if (!*line) continue;
 
-        // tokenize by |
         char *parts[8] = {0};
         int pc = 0;
         char *save2 = NULL;
         for (char *t = strtok_r(line, "|", &save2); t && pc < 8; t = strtok_r(NULL, "|", &save2)) {
+            t = g_strstrip(t); 
             parts[pc++] = t;
         }
-        if (pc < 3) continue;
+        if (pc < 2) continue;
+
         int id = atoi(parts[0]);
         const char *title = parts[1];
+
         const char *assignee = "";
-        const char *status = "";
-        const char *progress = "";
+        const char *progress = "0";
         const char *start = "";
         const char *end = "";
-        for (int i = 2; i < pc; i++) {
-            if (g_str_has_prefix(parts[i], "Assignee:")) assignee = parts[i] + 9;
-            else if (g_str_has_prefix(parts[i], "Status:")) status = parts[i] + 7;
-            else if (g_str_has_prefix(parts[i], "Progress:")) progress = parts[i] + 9;
-            else if (g_str_has_prefix(parts[i], "Start:")) start = parts[i] + 6;
-            else if (g_str_has_prefix(parts[i], "End:")) end = parts[i] + 4;
-        }
+
+       for (int i = 2; i < pc; i++) {
+    char *val = g_strstrip(parts[i]);             // <— thêm
+    if (g_str_has_prefix(val, "Assignee:")) assignee = val + 9;
+    else if (g_str_has_prefix(val, "Progress:")) progress = val + 9;
+    else if (g_str_has_prefix(val, "Start:")) start = val + 6;
+    else if (g_str_has_prefix(val, "End:")) end = val + 4;
+    }
+
+
+        char status_display[32];
+        snprintf(status_display, sizeof(status_display), "%s%%", progress && *progress ? progress : "0");
 
         GtkTreeIter iter;
         gtk_list_store_append(a->tasks_store, &iter);
         gtk_list_store_set(a->tasks_store, &iter,
             0, id,
-            1, title,
-            2, assignee,
-            3, status,
-            4, progress,
-            5, start,
-            6, end,
+            1, title ? title : "",
+            2, assignee ? assignee : "",
+            3, status_display,          // Status = progress%
+            4, start ? start : "",
+            5, end ? end : "",
             -1);
     }
+
     g_free(dup);
 }
+
 
 static gboolean gantt_draw_cb(GtkWidget *widget, cairo_t *cr, gpointer user_data) {
     App *a = (App*)user_data;
@@ -591,26 +600,6 @@ static void on_btn_assign_task(GtkButton *btn, gpointer user_data) {
     refresh_tasks(a);
 }
 
-static void on_btn_update_status(GtkButton *btn, gpointer user_data) {
-    App *a = (App*)user_data;
-    int tid = get_selected_task_id(a);
-    if (tid <= 0) {
-        const char *t = gtk_entry_get_text(a->task_id_entry);
-        if (t && *t) tid = atoi(t);
-    }
-    const char *status = gtk_combo_box_text_get_active_text(a->status_combo);
-    if (tid <= 0 || !status) return;
-
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "%s|%d|%s\n", CMD_UPDATE_TASK_STATUS, tid, status);
-    char payload[512]={0};
-    int code = net_request(a->sockfd, cmd, payload, sizeof(payload));
-    if (code != 0) show_msg(GTK_WINDOW(a->main_win), GTK_MESSAGE_ERROR, "Error", payload);
-    refresh_tasks(a);
-
-    const char *pid = gtk_combo_box_text_get_active_text(a->tasks_project_combo);
-    if (pid) refresh_gantt(a, atoi(pid));
-}
 
 static void on_btn_update_progress(GtkButton *btn, gpointer user_data) {
     App *a = (App*)user_data;
@@ -667,8 +656,40 @@ static void set_textview(GtkTextView *tv, const char *text) {
     gtk_text_buffer_set_text(b, text ? text : "", -1);
 }
 
+static char* escape_field(const char *s) {
+    if (!s) return g_strdup("");
+    GString *g = g_string_new("");
+    for (const char *p = s; *p; p++) {
+        if (*p == '\\') g_string_append(g, "\\\\");
+        else if (*p == '|') g_string_append(g, "\\|");
+        else if (*p == '\n') g_string_append(g, "\\n");
+        else if (*p == '\r') ; // ignore
+        else g_string_append_c(g, *p);
+    }
+    return g_string_free(g, FALSE); // caller g_free()
+}
+
+static void unescape_inplace(char *s) {
+    if (!s) return;
+    char *w = s;
+    for (char *p = s; *p; p++) {
+        if (*p == '\\') {
+            p++;
+            if (!*p) break;
+            if (*p == 'n') *w++ = '\n';
+            else if (*p == '|') *w++ = '|';
+            else if (*p == '\\') *w++ = '\\';
+            else { *w++ = '\\'; *w++ = *p; }
+        } else {
+            *w++ = *p;
+        }
+    }
+    *w = '\0';
+}
+
 static void on_btn_add_comment(GtkButton *btn, gpointer user_data) {
     App *a = (App*)user_data;
+
     const char *tid_s = gtk_entry_get_text(a->comment_task_id_entry);
     if (!tid_s || !*tid_s) return;
     int tid = atoi(tid_s);
@@ -679,61 +700,138 @@ static void on_btn_add_comment(GtkButton *btn, gpointer user_data) {
     char *content = gtk_text_buffer_get_text(buf, &start, &end, FALSE);
     if (!content || !*content) { g_free(content); return; }
 
+    char *safe = escape_field(content);
+
     char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "%s|%d|%s\n", CMD_ADD_COMMENT, tid, content);
-    char payload[512]={0};
+    snprintf(cmd, sizeof(cmd), "%s|%d|%s\n", CMD_ADD_COMMENT, tid, safe);
+
+    g_free(safe);
+
+    char payload[5120] = {0};
     int code = net_request(a->sockfd, cmd, payload, sizeof(payload));
     if (code != 0) show_msg(GTK_WINDOW(a->main_win), GTK_MESSAGE_ERROR, "Error", payload);
 
     gtk_text_buffer_set_text(buf, "", -1);
     g_free(content);
 
-    // auto reload comments so user sees them immediately
     on_btn_list_comments(NULL, user_data);
 }
 
 static void on_btn_list_comments(GtkButton *btn, gpointer user_data) {
     App *a = (App*)user_data;
+
     const char *tid_s = gtk_entry_get_text(a->comment_task_id_entry);
     if (!tid_s || !*tid_s) return;
     int tid = atoi(tid_s);
 
     char cmd[128];
     snprintf(cmd, sizeof(cmd), "%s|%d\n", CMD_LIST_COMMENTS, tid);
-    char payload[4096]={0};
+
+    char payload[40960] = {0};
     int code = net_request(a->sockfd, cmd, payload, sizeof(payload));
-    if (code != 0) show_msg(GTK_WINDOW(a->main_win), GTK_MESSAGE_ERROR, "Error", payload);
-    set_textview(a->comments_list_text, payload);
+    if (code != 0) {
+        show_msg(GTK_WINDOW(a->main_win), GTK_MESSAGE_ERROR, "Error", payload);
+        return;
+    }
+
+    if (!payload[0] || strcmp(payload, "No comments") == 0) {
+        set_textview(a->comments_list_text, "No comments\n");
+        return;
+    }
+
+    GString *out = g_string_new("");
+    char *dup = g_strdup(payload);
+    char *save = NULL;
+
+    for (char *line = strtok_r(dup, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        if (!*line) continue;
+
+        char *save2 = NULL;
+        char *id = strtok_r(line, "|", &save2);
+        char *user = strtok_r(NULL, "|", &save2);
+        char *content = strtok_r(NULL, "|", &save2);
+        char *ts = strtok_r(NULL, "|", &save2);
+        if (!id || !user || !content || !ts) continue;
+
+        unescape_inplace(content);
+        g_string_append_printf(out, "[%s] %s: %s\n", ts, user, content);
+    }
+
+    set_textview(a->comments_list_text, out->str);
+    g_string_free(out, TRUE);
+    g_free(dup);
 }
 
 static void on_btn_add_attachment(GtkButton *btn, gpointer user_data) {
     App *a = (App*)user_data;
+
     const char *tid_s = gtk_entry_get_text(a->attach_task_id_entry);
     const char *filename = gtk_entry_get_text(a->attach_filename_entry);
     const char *filepath = gtk_entry_get_text(a->attach_filepath_entry);
     if (!tid_s || !*tid_s || !filename || !*filename || !filepath || !*filepath) return;
+
     int tid = atoi(tid_s);
+
+    char *safe_fn = escape_field(filename);
+    char *safe_fp = escape_field(filepath);
+
     char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "%s|%d|%s|%s\n", CMD_ADD_ATTACHMENT, tid, filename, filepath);
-    char payload[512]={0};
+    snprintf(cmd, sizeof(cmd), "%s|%d|%s|%s\n", CMD_ADD_ATTACHMENT, tid, safe_fn, safe_fp);
+
+    g_free(safe_fn);
+    g_free(safe_fp);
+
+    char payload[5120] = {0};
     int code = net_request(a->sockfd, cmd, payload, sizeof(payload));
     if (code != 0) show_msg(GTK_WINDOW(a->main_win), GTK_MESSAGE_ERROR, "Error", payload);
 
-    // auto reload attachments
     on_btn_list_attachments(NULL, user_data);
 }
 
 static void on_btn_list_attachments(GtkButton *btn, gpointer user_data) {
     App *a = (App*)user_data;
+
     const char *tid_s = gtk_entry_get_text(a->attach_task_id_entry);
     if (!tid_s || !*tid_s) return;
     int tid = atoi(tid_s);
+
     char cmd[128];
     snprintf(cmd, sizeof(cmd), "%s|%d\n", CMD_LIST_ATTACHMENTS, tid);
-    char payload[4096]={0};
+
+    char payload[40960] = {0};
     int code = net_request(a->sockfd, cmd, payload, sizeof(payload));
-    if (code != 0) show_msg(GTK_WINDOW(a->main_win), GTK_MESSAGE_ERROR, "Error", payload);
-    set_textview(a->attachments_list_text, payload);
+    if (code != 0) {
+        show_msg(GTK_WINDOW(a->main_win), GTK_MESSAGE_ERROR, "Error", payload);
+        return;
+    }
+
+    if (!payload[0] || strcmp(payload, "No attachments") == 0) {
+        set_textview(a->attachments_list_text, "No attachments\n");
+        return;
+    }
+
+    GString *out = g_string_new("");
+    char *dup = g_strdup(payload);
+    char *save = NULL;
+
+    for (char *line = strtok_r(dup, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        if (!*line) continue;
+
+        char *save2 = NULL;
+        char *id = strtok_r(line, "|", &save2);
+        char *filename = strtok_r(NULL, "|", &save2);
+        char *filepath = strtok_r(NULL, "|", &save2);
+        char *ts = strtok_r(NULL, "|", &save2);
+        if (!id || !filename || !filepath || !ts) continue;
+
+        unescape_inplace(filename);
+        unescape_inplace(filepath);
+        g_string_append_printf(out, "[%s] %s (%s)\n", ts, filename, filepath);
+    }
+
+    set_textview(a->attachments_list_text, out->str);
+    g_string_free(out, TRUE);
+    g_free(dup);
 }
 
 static gboolean poll_chat(gpointer user_data) {
@@ -920,9 +1018,11 @@ static GtkWidget* build_main(App *a) {
     GtkWidget *btn_refresh_tasks = gtk_button_new_with_label("Refresh tasks");
     gtk_box_pack_end(GTK_BOX(task_top), btn_refresh_tasks, FALSE, FALSE, 0);
 
-    a->tasks_store = gtk_list_store_new(7, G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
-    const char *tcols[] = {"ID","Title","Assignee","Status","Progress","Start","End"};
-    a->tasks_view = GTK_TREE_VIEW(make_tree_view(a->tasks_store, tcols, 7));
+    a->tasks_store = gtk_list_store_new(6,
+    G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
+    const char *tcols[] = {"ID","Title","Assignee","Status","Start","End"};
+    a->tasks_view = GTK_TREE_VIEW(make_tree_view(a->tasks_store, tcols, 6));
+
     // double-click row to view task detail (includes description)
     g_signal_connect(a->tasks_view, "row-activated", G_CALLBACK(on_task_row_activated), a);
 
@@ -947,18 +1047,12 @@ static GtkWidget* build_main(App *a) {
     gtk_entry_set_placeholder_text(a->assign_user_entry, "Assign username");
     GtkWidget *btn_assign = gtk_button_new_with_label("Assign");
 
-    a->status_combo = GTK_COMBO_BOX_TEXT(gtk_combo_box_text_new());
-    gtk_combo_box_text_append_text(a->status_combo, "NOT_STARTED");
-    gtk_combo_box_text_append_text(a->status_combo, "IN_PROGRESS");
-    gtk_combo_box_text_append_text(a->status_combo, "DONE");
-    gtk_combo_box_set_active(GTK_COMBO_BOX(a->status_combo), 0);
-    GtkWidget *btn_status = gtk_button_new_with_label("Update status");
+  // Status = Progress (%)
+GtkAdjustment *adj = gtk_adjustment_new(0, 0, 100, 1, 10, 0);
+a->progress_spin = GTK_SPIN_BUTTON(gtk_spin_button_new(adj, 1, 0));
+gtk_spin_button_set_numeric(a->progress_spin, TRUE);
 
-    // Progress (%): 0..100
-    GtkAdjustment *adj = gtk_adjustment_new(0, 0, 100, 1, 10, 0);
-    a->progress_spin = GTK_SPIN_BUTTON(gtk_spin_button_new(adj, 1, 0));
-    gtk_spin_button_set_numeric(a->progress_spin, TRUE);
-    GtkWidget *btn_progress = gtk_button_new_with_label("Update progress (%)");
+GtkWidget *btn_status = gtk_button_new_with_label("Update %");
 
     a->start_date_entry = GTK_ENTRY(gtk_entry_new());
     gtk_entry_set_placeholder_text(a->start_date_entry, "Start YYYY-MM-DD");
@@ -974,17 +1068,14 @@ static GtkWidget* build_main(App *a) {
     gtk_grid_attach(GTK_GRID(task_form), GTK_WIDGET(a->task_id_entry), 0,r,1,1);
     gtk_grid_attach(GTK_GRID(task_form), GTK_WIDGET(a->assign_user_entry), 1,r,2,1);
     gtk_grid_attach(GTK_GRID(task_form), btn_assign, 3,r,1,1);
-    gtk_grid_attach(GTK_GRID(task_form), GTK_WIDGET(a->status_combo), 4,r,1,1);
+    gtk_grid_attach(GTK_GRID(task_form), GTK_WIDGET(a->progress_spin), 4,r,1,1);
     r++;
     gtk_grid_attach(GTK_GRID(task_form), btn_status, 4,r-1,1,1);
     gtk_grid_attach(GTK_GRID(task_form), GTK_WIDGET(a->start_date_entry), 0,r,2,1);
     gtk_grid_attach(GTK_GRID(task_form), GTK_WIDGET(a->end_date_entry), 2,r,2,1);
     gtk_grid_attach(GTK_GRID(task_form), btn_dates, 4,r,1,1);
 
-    r++;
-    gtk_grid_attach(GTK_GRID(task_form), gtk_label_new("Progress (%)"), 0,r,1,1);
-    gtk_grid_attach(GTK_GRID(task_form), GTK_WIDGET(a->progress_spin), 1,r,1,1);
-    gtk_grid_attach(GTK_GRID(task_form), btn_progress, 2,r,2,1);
+  
 
     gtk_box_pack_start(GTK_BOX(task_box), task_form, FALSE, FALSE, 0);
 
@@ -992,8 +1083,7 @@ static GtkWidget* build_main(App *a) {
     g_signal_connect(btn_refresh_tasks, "clicked", G_CALLBACK(on_tasks_project_changed), a);
     g_signal_connect(btn_create_task, "clicked", G_CALLBACK(on_btn_create_task), a);
     g_signal_connect(btn_assign, "clicked", G_CALLBACK(on_btn_assign_task), a);
-    g_signal_connect(btn_status, "clicked", G_CALLBACK(on_btn_update_status), a);
-    g_signal_connect(btn_progress, "clicked", G_CALLBACK(on_btn_update_progress), a);
+    g_signal_connect(btn_status, "clicked", G_CALLBACK(on_btn_update_progress), a);
     g_signal_connect(btn_dates, "clicked", G_CALLBACK(on_btn_set_dates), a);
 
     gtk_notebook_append_page(GTK_NOTEBOOK(tabs), task_box, gtk_label_new("Tasks"));
