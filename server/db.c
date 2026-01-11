@@ -2,21 +2,26 @@
 #include <stdio.h>
 #include <string.h>
 
+// Handle kết nối SQLite toàn cục
 sqlite3 *db = NULL;
 
+// Khởi tạo DB, tạo bảng (nếu chưa có), và cố gắng ALTER để tương thích DB cũ
 int db_init(const char *path) {
+    printf("DB init path = %s\n", path);
     if (sqlite3_open(path, &db) != SQLITE_OK) {
         printf("Cannot open DB: %s\n", sqlite3_errmsg(db));
         return 0;
     }
 
+    // Đợt bảng cơ bản: users / projects / project_members / tasks
+    // Lưu ý: dùng 1 chuỗi nhiều lệnh CREATE TABLE; sqlite3_exec sẽ chạy tất cả.
     const char *sql =
         "CREATE TABLE IF NOT EXISTS users ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "username TEXT UNIQUE,"
         "password TEXT,"
-        "role TEXT DEFAULT 'MEMBER',"
-        "status TEXT DEFAULT 'ACTIVE',"
+        "role TEXT DEFAULT 'MEMBER',"      // vai trò tổng (MEMBER/ADMIN...)
+        "status TEXT DEFAULT 'ACTIVE',"    // trạng thái user
         "created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
         ");"
 
@@ -24,29 +29,30 @@ int db_init(const char *path) {
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "name TEXT,"
         "description TEXT DEFAULT '',"
-        "owner_id INTEGER,"
+        "owner_id INTEGER,"                // chủ sở hữu project
         "status TEXT DEFAULT 'ACTIVE',"
         "created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
         ");"
 
-        // IMPORTANT: prevent duplicate memberships
+        // Bảng thành viên project (khoá chính (project_id, user_id) để tránh trùng)
         "CREATE TABLE IF NOT EXISTS project_members ("
         "project_id INTEGER,"
         "user_id INTEGER,"
-        "role_in_project TEXT DEFAULT 'MEMBER',"
+        "role_in_project TEXT DEFAULT 'MEMBER'," // role trong project
         "joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
         "PRIMARY KEY(project_id, user_id)"
         ");"
 
+        // Bảng tasks chính
         "CREATE TABLE IF NOT EXISTS tasks ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "project_id INTEGER,"
         "title TEXT,"
         "description TEXT,"
-        "assignee_id INTEGER,"
+        "assignee_id INTEGER,"            // user được assign
         "status TEXT DEFAULT 'NOT_STARTED',"
-        "progress INTEGER DEFAULT 0,"
-        "start_date TEXT,"
+        "progress INTEGER DEFAULT 0,"     // % tiến độ
+        "start_date TEXT,"                // YYYY-MM-DD
         "end_date TEXT,"
         "created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
         ");";
@@ -58,7 +64,7 @@ int db_init(const char *path) {
         return 0;
     }
 
-    // Additional tables for extended features
+    // Bảng mở rộng: comments, attachments, project chat
     const char *sql2 =
         "CREATE TABLE IF NOT EXISTS task_comments ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -88,7 +94,8 @@ int db_init(const char *path) {
         return 0;
     }
 
-        const char *sql3 =
+    // Bảng báo cáo (reports) + comment/file của report
+    const char *sql3 =
         "CREATE TABLE IF NOT EXISTS reports ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "project_id INTEGER,"
@@ -118,7 +125,8 @@ int db_init(const char *path) {
         return 0;
     }
 
-    // Backward compatible: if an old DB existed without new columns, try ALTER and ignore errors.
+    // Bổ sung cột cho DB cũ: chạy ALTER TABLE, bỏ qua error "duplicate column"
+    // (SQLite không có IF NOT EXISTS cho ADD COLUMN, nên cách này là chuẩn) [web:38]
     const char *alter_sql[] = {
         // users
         "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'MEMBER'",
@@ -137,19 +145,20 @@ int db_init(const char *path) {
         "ALTER TABLE tasks ADD COLUMN end_date TEXT",
         "ALTER TABLE tasks ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
 
-        // project_members (old DB may have no PK; we cannot ALTER to add PK here)
+        // project_members
         "ALTER TABLE project_members ADD COLUMN role_in_project TEXT DEFAULT 'MEMBER'",
         "ALTER TABLE project_members ADD COLUMN joined_at DATETIME DEFAULT CURRENT_TIMESTAMP",
 
         NULL
     };
     for (int i = 0; alter_sql[i]; i++) {
-        sqlite3_exec(db, alter_sql[i], NULL, NULL, NULL);
+        sqlite3_exec(db, alter_sql[i], NULL, NULL, NULL); // không check lỗi
     }
 
     return 1;
 }
 
+// Đóng DB global
 void db_close() {
     if (db) sqlite3_close(db);
 }
@@ -158,6 +167,7 @@ void db_close() {
             USER FUNCTIONS
 ===================================== */
 
+// Thêm user mới (username UNIQUE). Trả 1 nếu OK, 0 nếu lỗi (trùng tên...).
 int db_register_user(const char *username, const char *password) {
     sqlite3_stmt *st;
 
@@ -174,6 +184,7 @@ int db_register_user(const char *username, const char *password) {
     return rc == SQLITE_DONE;
 }
 
+// Auth user: kiểm tra username/password, trả user_id nếu thành công
 int db_auth_user(const char *username, const char *password, int *user_id) {
     sqlite3_stmt *st;
 
@@ -195,6 +206,7 @@ int db_auth_user(const char *username, const char *password, int *user_id) {
     return 0;
 }
 
+// Lấy id từ username (dùng cho invite, assign...)
 int db_get_user_id(const char *username, int *user_id) {
     sqlite3_stmt *st;
 
@@ -219,8 +231,11 @@ int db_get_user_id(const char *username, int *user_id) {
             PROJECT FUNCTIONS
 ===================================== */
 
+// Tạo project mới; đồng thời tự thêm owner vào project_members
 int db_create_project(const char *name, int owner_id, int *project_id) {
     sqlite3_stmt *st;
+
+    printf("CREATE_PROJECT name=%s owner_id=%d\n", name, owner_id);
 
     sqlite3_prepare_v2(db,
         "INSERT INTO projects(name, owner_id) VALUES (?, ?)",
@@ -230,6 +245,7 @@ int db_create_project(const char *name, int owner_id, int *project_id) {
     sqlite3_bind_int(st, 2, owner_id);
 
     if (sqlite3_step(st) != SQLITE_DONE) {
+        printf("CREATE_PROJECT SQL error: %s\n", sqlite3_errmsg(db));
         sqlite3_finalize(st);
         return 0;
     }
@@ -237,7 +253,7 @@ int db_create_project(const char *name, int owner_id, int *project_id) {
     *project_id = sqlite3_last_insert_rowid(db);
     sqlite3_finalize(st);
 
-    // Make the owner a member too
+    // Owner cũng là member của project
     sqlite3_prepare_v2(db,
         "INSERT INTO project_members(project_id, user_id) VALUES (?, ?)",
         -1, &st, NULL);
@@ -251,8 +267,8 @@ int db_create_project(const char *name, int owner_id, int *project_id) {
     return 1;
 }
 
+// Liệt kê các project mà user là member -> "id|name\n..."
 int db_list_projects_for_user(int user_id, char *out, int out_size) {
-
     sqlite3_stmt *st;
 
     sqlite3_prepare_v2(db,
@@ -280,9 +296,9 @@ int db_list_projects_for_user(int user_id, char *out, int out_size) {
     return 1;
 }
 
+// Mời 1 user tham gia project (tránh trùng membership)
 int db_invite_member(int project_id, int user_id) {
-
-    // prevent duplicates (also enforced by PK, but we want a nicer message)
+    // kiểm tra tồn tại trước
     sqlite3_stmt *st;
     sqlite3_prepare_v2(db,
         "SELECT 1 FROM project_members WHERE project_id=? AND user_id=?",
@@ -291,8 +307,9 @@ int db_invite_member(int project_id, int user_id) {
     sqlite3_bind_int(st, 2, user_id);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
-    if (rc == SQLITE_ROW) return -1; // already member
+    if (rc == SQLITE_ROW) return -1; // đã là member
 
+    // insert mới
     sqlite3_prepare_v2(db,
         "INSERT INTO project_members(project_id, user_id) VALUES (?, ?)",
         -1, &st, NULL);
@@ -308,6 +325,7 @@ int db_invite_member(int project_id, int user_id) {
             PERMISSIONS / HELPERS
 ===================================== */
 
+// Kiểm tra user có phải owner của project không
 int db_is_project_owner(int project_id, int user_id) {
     sqlite3_stmt *st;
     sqlite3_prepare_v2(db,
@@ -320,6 +338,7 @@ int db_is_project_owner(int project_id, int user_id) {
     return rc == SQLITE_ROW;
 }
 
+// Kiểm tra user có là member của project không
 int db_is_project_member(int project_id, int user_id) {
     sqlite3_stmt *st;
     sqlite3_prepare_v2(db,
@@ -332,6 +351,7 @@ int db_is_project_member(int project_id, int user_id) {
     return rc == SQLITE_ROW;
 }
 
+// Lấy project_id của 1 task
 int db_get_task_project_id(int task_id, int *project_id) {
     sqlite3_stmt *st;
     sqlite3_prepare_v2(db,
@@ -348,6 +368,7 @@ int db_get_task_project_id(int task_id, int *project_id) {
     return 0;
 }
 
+// Lấy project_id của 1 report
 int db_get_report_project_id(int report_id, int *project_id) {
     sqlite3_stmt *st;
     sqlite3_prepare_v2(db,
@@ -364,6 +385,7 @@ int db_get_report_project_id(int report_id, int *project_id) {
     return 0;
 }
 
+// Lấy assignee_id của task
 int db_get_task_assignee_id(int task_id, int *assignee_id) {
     sqlite3_stmt *st;
     sqlite3_prepare_v2(db,
@@ -384,36 +406,61 @@ int db_get_task_assignee_id(int task_id, int *assignee_id) {
             TASK FUNCTIONS
 ===================================== */
 
+// Tạo task đầy đủ + project_task_no tự tăng trong từng project (cho UI)
 int db_create_task_full(int project_id, const char *title, const char *desc,
                         int assignee_id, const char *start_date, const char *end_date,
                         int *task_id) {
+    int rc;
     sqlite3_stmt *st;
-    sqlite3_prepare_v2(db,
-        "INSERT INTO tasks(project_id, title, description, assignee_id, start_date, end_date) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        -1, &st, NULL);
-    sqlite3_bind_int(st, 1, project_id);
-    sqlite3_bind_text(st, 2, title, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 3, desc ? desc : "", -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(st, 4, assignee_id);
-    sqlite3_bind_text(st, 5, start_date, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 6, end_date, -1, SQLITE_TRANSIENT);
+    int next_no = 1;
 
-    if (sqlite3_step(st) != SQLITE_DONE) {
+    // Lấy số thứ tự mới trong project: MAX(project_task_no)+1
+    const char *sql_max =
+        "SELECT COALESCE(MAX(project_task_no), 0) + 1 "
+        "FROM tasks WHERE project_id = ?;";
+
+    rc = sqlite3_prepare_v2(db, sql_max, -1, &st, NULL);
+    if (rc != SQLITE_OK) return 0;
+
+    sqlite3_bind_int(st, 1, project_id);
+
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        next_no = sqlite3_column_int(st, 0);
+    }
+    sqlite3_finalize(st);
+
+    // Insert task với project_task_no
+    const char *sql_ins =
+        "INSERT INTO tasks(project_id, project_task_no, title, description, assignee_id, start_date, end_date) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?);";
+
+    rc = sqlite3_prepare_v2(db, sql_ins, -1, &st, NULL);
+    if (rc != SQLITE_OK) return 0;
+
+    sqlite3_bind_int  (st, 1, project_id);
+    sqlite3_bind_int  (st, 2, next_no);
+    sqlite3_bind_text (st, 3, title, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text (st, 4, desc ? desc : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int  (st, 5, assignee_id);
+    sqlite3_bind_text (st, 6, start_date, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text (st, 7, end_date, -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(st);
+    if (rc != SQLITE_DONE) {
         sqlite3_finalize(st);
         return 0;
     }
-    *task_id = sqlite3_last_insert_rowid(db);
+
+    if (task_id) {
+        *task_id = (int)sqlite3_last_insert_rowid(db);
+    }
+
     sqlite3_finalize(st);
     return 1;
 }
 
-/* =====================================
-            TASK FUNCTIONS
-===================================== */
-
+// tạo task chỉ lưu project_id, title, desc (không có assignee/dates)
 int db_create_task(int project_id, const char *title, const char *desc, int *task_id) {
-
     sqlite3_stmt *st;
 
     sqlite3_prepare_v2(db,
@@ -435,14 +482,19 @@ int db_create_task(int project_id, const char *title, const char *desc, int *tas
     return 1;
 }
 
+// Liệt kê tasks theo project: dùng project_task_no và nhiều field cho UI
 int db_list_tasks_in_project(int project_id, char *out, int out_size) {
     sqlite3_stmt *stmt;
     const char *sql =
-        "SELECT t.id, t.title, IFNULL(u.username, 'None') AS assignee, "
-        "IFNULL(t.status,'NOT_STARTED') AS status, IFNULL(t.progress,0) AS progress, IFNULL(t.start_date,''), IFNULL(t.end_date,'') "
+        "SELECT t.id, t.title, "
+        "IFNULL(u.username, 'None') AS assignee, "
+        "IFNULL(t.status,'NOT_STARTED') AS status, "
+        "IFNULL(t.progress,0) AS progress, "
+        "IFNULL(t.start_date,''), IFNULL(t.end_date,'') "
         "FROM tasks t "
         "LEFT JOIN users u ON t.assignee_id = u.id "
-        "WHERE t.project_id = ?;";
+        "WHERE t.project_id = ? "
+        "ORDER BY t.id ASC;";
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
         return 0;
@@ -453,23 +505,24 @@ int db_list_tasks_in_project(int project_id, char *out, int out_size) {
     out[0] = '\0';
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-        int id = sqlite3_column_int(stmt, 0);
-        const unsigned char *title = sqlite3_column_text(stmt, 1);
-        const unsigned char *assignee = sqlite3_column_text(stmt, 2);
-        const unsigned char *status = sqlite3_column_text(stmt, 3);
-        int progress = sqlite3_column_int(stmt, 4);
-        const unsigned char *start_date = sqlite3_column_text(stmt, 5);
-        const unsigned char *end_date = sqlite3_column_text(stmt, 6);
+        int task_id                    = sqlite3_column_int(stmt, 0);
+        const unsigned char *title     = sqlite3_column_text(stmt, 1);
+        const unsigned char *assignee  = sqlite3_column_text(stmt, 2);
+        const unsigned char *status    = sqlite3_column_text(stmt, 3);
+        int progress                   = sqlite3_column_int(stmt, 4);
+        const unsigned char *start_date= sqlite3_column_text(stmt, 5);
+        const unsigned char *end_date  = sqlite3_column_text(stmt, 6);
 
         snprintf(buf, sizeof(buf),
-                 "%d|%s|Assignee:%s|Status:%s|Progress:%d|Start:%s|End:%s\n",
-                 id,
-                 title ? (char *)title : "(null)",
-                 assignee ? (char *)assignee : "None",
-                 status ? (char *)status : "NOT_STARTED",
-                 progress,
-                 start_date ? (char *)start_date : "",
-                 end_date ? (char *)end_date : "");
+         "%d|%s|Assignee:%s|Status:%s|Progress:%d|Start:%s|End:%s\n",
+         task_id,
+         title ? (const char *)title : "",
+         assignee ? (const char *)assignee : "None",
+         status ? (const char *)status : "NOT_STARTED",
+         progress,
+         start_date ? (const char *)start_date : "",
+         end_date ? (const char *)end_date : "");
+
 
         strncat(out, buf, out_size - strlen(out) - 1);
     }
@@ -479,9 +532,10 @@ int db_list_tasks_in_project(int project_id, char *out, int out_size) {
 }
 
 /* =====================================
-        EXTENDED FEATURES
+        EXTENDED TASK FEATURES
 ===================================== */
 
+// Set status trực tiếp (ít dùng vì đã có progress->status)
 int db_update_task_status(int task_id, const char *status) {
     sqlite3_stmt *stmt;
     const char *sql = "UPDATE tasks SET status = ? WHERE id = ?";
@@ -493,9 +547,8 @@ int db_update_task_status(int task_id, const char *status) {
     return rc == SQLITE_DONE;
 }
 
+// Cập nhật progress và tự set status theo progress (0 / IN_PROGRESS / DONE)
 int db_update_task_progress(int task_id, int progress) {
-    // Keep backward compatibility with existing "status" column.
-    // We derive status from progress so UI can keep using the old status combo if needed.
     const char *status = "NOT_STARTED";
     if (progress >= 100) status = "DONE";
     else if (progress > 0) status = "IN_PROGRESS";
@@ -511,6 +564,7 @@ int db_update_task_progress(int task_id, int progress) {
     return rc == SQLITE_DONE;
 }
 
+// Set start/end date cho task
 int db_set_task_dates(int task_id, const char *start_date, const char *end_date) {
     sqlite3_stmt *stmt;
     const char *sql = "UPDATE tasks SET start_date = ?, end_date = ? WHERE id = ?";
@@ -523,6 +577,7 @@ int db_set_task_dates(int task_id, const char *start_date, const char *end_date)
     return rc == SQLITE_DONE;
 }
 
+// Lấy detail 1 task để show popup
 int db_get_task_detail(int task_id, char *out, int out_size) {
     sqlite3_stmt *stmt;
     const char *sql =
@@ -532,7 +587,8 @@ int db_get_task_detail(int task_id, char *out, int out_size) {
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return 0;
     sqlite3_bind_int(stmt, 1, task_id);
     if (sqlite3_step(stmt) != SQLITE_ROW) { sqlite3_finalize(stmt); return 0; }
-    snprintf(out, out_size, "%d|%d|%s|%s|Assignee:%s|Status:%s|Progress:%d|Start:%s|End:%s\n",
+    snprintf(out, out_size,
+        "%d|%d|%s|%s|Assignee:%s|Status:%s|Progress:%d|Start:%s|End:%s\n",
         sqlite3_column_int(stmt,0),
         sqlite3_column_int(stmt,1),
         (const char*)sqlite3_column_text(stmt,2),
@@ -546,18 +602,20 @@ int db_get_task_detail(int task_id, char *out, int out_size) {
     return 1;
 }
 
+// List task chuyên cho Gantt: trả id|title|Status:..|Progress:..|Start:..|End:..|Assignee:..
 int db_list_tasks_gantt(int project_id, char *out, int out_size) {
-    // Same as list_tasks but optimized for Gantt rendering.
     sqlite3_stmt *stmt;
     const char *sql =
-        "SELECT t.id, t.title, IFNULL(t.status,'NOT_STARTED'), IFNULL(t.progress,0), IFNULL(t.start_date,''), IFNULL(t.end_date,''), IFNULL(u.username,'None') "
+        "SELECT t.id, t.title, IFNULL(t.status,'NOT_STARTED'), IFNULL(t.progress,0),"
+        "IFNULL(t.start_date,''), IFNULL(t.end_date,''), IFNULL(u.username,'None') "
         "FROM tasks t LEFT JOIN users u ON t.assignee_id = u.id WHERE t.project_id = ?;";
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return 0;
     sqlite3_bind_int(stmt, 1, project_id);
     out[0] = '\0';
     char buf[512];
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-        snprintf(buf, sizeof(buf), "%d|%s|Status:%s|Progress:%d|Start:%s|End:%s|Assignee:%s\n",
+        snprintf(buf, sizeof(buf),
+            "%d|%s|Status:%s|Progress:%d|Start:%s|End:%s|Assignee:%s\n",
             sqlite3_column_int(stmt,0),
             (const char*)sqlite3_column_text(stmt,1),
             (const char*)sqlite3_column_text(stmt,2),
@@ -571,6 +629,11 @@ int db_list_tasks_gantt(int project_id, char *out, int out_size) {
     return 1;
 }
 
+/* =====================================
+            COMMENTS / ATTACHMENTS / CHAT
+===================================== */
+
+// Thêm comment task
 int db_add_comment(int task_id, int user_id, const char *content) {
     sqlite3_stmt *stmt;
     const char *sql = "INSERT INTO task_comments(task_id,user_id,content) VALUES(?,?,?)";
@@ -583,6 +646,7 @@ int db_add_comment(int task_id, int user_id, const char *content) {
     return rc == SQLITE_DONE;
 }
 
+// List comment task -> "id|username|content|created_at\n..."
 int db_list_comments(int task_id, char *out, int out_size) {
     sqlite3_stmt *stmt;
     const char *sql =
@@ -605,6 +669,7 @@ int db_list_comments(int task_id, char *out, int out_size) {
     return 1;
 }
 
+// Thêm attachment cho task
 int db_add_attachment(int task_id, const char *filename, const char *filepath) {
     sqlite3_stmt *stmt;
     const char *sql = "INSERT INTO task_attachments(task_id,filename,filepath) VALUES(?,?,?)";
@@ -617,6 +682,7 @@ int db_add_attachment(int task_id, const char *filename, const char *filepath) {
     return rc == SQLITE_DONE;
 }
 
+// List attachments -> "id|filename|filepath|created_at\n..."
 int db_list_attachments(int task_id, char *out, int out_size) {
     sqlite3_stmt *stmt;
     const char *sql =
@@ -638,6 +704,7 @@ int db_list_attachments(int task_id, char *out, int out_size) {
     return 1;
 }
 
+// Thêm chat message vào project_chat
 int db_add_chat(int project_id, int user_id, const char *content) {
     sqlite3_stmt *stmt;
     const char *sql = "INSERT INTO project_chat(project_id,user_id,content) VALUES(?,?,?)";
@@ -650,6 +717,7 @@ int db_add_chat(int project_id, int user_id, const char *content) {
     return rc == SQLITE_DONE;
 }
 
+// List chat của project, chỉ lấy những id > after_id
 int db_list_chat(int project_id, int after_id, char *out, int out_size) {
     sqlite3_stmt *stmt;
     const char *sql =
@@ -673,11 +741,10 @@ int db_list_chat(int project_id, int after_id, char *out, int out_size) {
     return 1;
 }
 
-
+// Assign task cho user (update assignee_id)
 int db_assign_task(int task_id, int user_id) {
     sqlite3_stmt *stmt;
     const char *sql = "UPDATE tasks SET assignee_id = ? WHERE id = ?";
-    
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
         return 0;
 
@@ -694,7 +761,9 @@ int db_assign_task(int task_id, int user_id) {
                 REPORTS
 ===================================== */
 
-int db_add_report(int project_id, int created_by, const char *title, const char *desc, int *report_id) {
+// Thêm report mới
+int db_add_report(int project_id, int created_by,
+                  const char *title, const char *desc, int *report_id) {
     sqlite3_stmt *st;
     sqlite3_prepare_v2(db,
         "INSERT INTO reports(project_id,title,description,created_by) VALUES(?,?,?,?)",
@@ -710,6 +779,7 @@ int db_add_report(int project_id, int created_by, const char *title, const char 
     return 1;
 }
 
+// List reports trong 1 project
 int db_list_reports(int project_id, char *out, int out_size) {
     sqlite3_stmt *st;
     const char *sql =
@@ -733,6 +803,7 @@ int db_list_reports(int project_id, char *out, int out_size) {
     return 1;
 }
 
+// Lấy detail 1 report
 int db_get_report(int report_id, char *out, int out_size) {
     sqlite3_stmt *st;
     const char *sql =
@@ -756,6 +827,7 @@ int db_get_report(int report_id, char *out, int out_size) {
     return 1;
 }
 
+// Update title/desc report
 int db_update_report(int report_id, const char *title, const char *desc) {
     sqlite3_stmt *st;
     const char *sql = "UPDATE reports SET title=?, description=? WHERE id=?";
@@ -768,8 +840,8 @@ int db_update_report(int report_id, const char *title, const char *desc) {
     return rc == SQLITE_DONE;
 }
 
+// Xoá report + toàn bộ comment/file của nó
 int db_delete_report(int report_id) {
-    // delete children first to keep DB tidy
     sqlite3_stmt *st;
 
     sqlite3_prepare_v2(db, "DELETE FROM report_comments WHERE report_id=?", -1, &st, NULL);
@@ -793,6 +865,7 @@ int db_delete_report(int report_id) {
             REPORT COMMENTS
 ===================================== */
 
+// Thêm comment vào report
 int db_add_report_comment(int report_id, int user_id, const char *content) {
     sqlite3_stmt *st;
     const char *sql = "INSERT INTO report_comments(report_id,user_id,content) VALUES(?,?,?)";
@@ -805,6 +878,7 @@ int db_add_report_comment(int report_id, int user_id, const char *content) {
     return rc == SQLITE_DONE;
 }
 
+// List comment của report
 int db_list_report_comments(int report_id, char *out, int out_size) {
     sqlite3_stmt *st;
     const char *sql =
@@ -828,6 +902,7 @@ int db_list_report_comments(int report_id, char *out, int out_size) {
     return 1;
 }
 
+// Xoá 1 comment của report
 int db_delete_report_comment(int comment_id) {
     sqlite3_stmt *st;
     const char *sql = "DELETE FROM report_comments WHERE id=?";
@@ -842,6 +917,7 @@ int db_delete_report_comment(int comment_id) {
                 REPORT FILES
 ===================================== */
 
+// Thêm file đính kèm cho report
 int db_add_report_file(int report_id, const char *filename, const char *filepath) {
     sqlite3_stmt *st;
     const char *sql = "INSERT INTO report_files(report_id,filename,filepath) VALUES(?,?,?)";
@@ -854,6 +930,7 @@ int db_add_report_file(int report_id, const char *filename, const char *filepath
     return rc == SQLITE_DONE;
 }
 
+// List file đính kèm report
 int db_list_report_files(int report_id, char *out, int out_size) {
     sqlite3_stmt *st;
     const char *sql =
@@ -876,6 +953,7 @@ int db_list_report_files(int report_id, char *out, int out_size) {
     return 1;
 }
 
+// Xoá file đính kèm report
 int db_delete_report_file(int file_id) {
     sqlite3_stmt *st;
     const char *sql = "DELETE FROM report_files WHERE id=?";
@@ -885,4 +963,3 @@ int db_delete_report_file(int file_id) {
     sqlite3_finalize(st);
     return rc == SQLITE_DONE;
 }
-

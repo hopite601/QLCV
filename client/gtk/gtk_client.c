@@ -41,6 +41,28 @@ typedef struct {
 
 } App;
 
+static void init_css(void) {
+    GtkCssProvider *provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(
+        provider,
+        ".chat-name {\n"
+        "  color: #aaaaaa;\n"
+        "  font-size: 9pt;\n"
+        "}\n"
+        ".chat-ts {\n"
+        "  color: #999999;\n"
+        "  font-size: 8pt;\n"
+        "}\n",
+        -1, NULL);
+
+    gtk_style_context_add_provider_for_screen(
+        gdk_screen_get_default(),
+        GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+    g_object_unref(provider);
+}
+
 static void show_error(GtkWindow *parent, const char *msg) {
     GtkWidget *d = gtk_message_dialog_new(parent,
         GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
@@ -152,78 +174,39 @@ static void on_project_create(GtkButton *btn, gpointer user_data) {
     App *app = user_data;
 
     GtkWidget *dialog = gtk_dialog_new_with_buttons(
-    "Create Task", GTK_WINDOW(app->main_win),
-    GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-    "Cancel", GTK_RESPONSE_CANCEL,
-    "Create", GTK_RESPONSE_OK,
-    NULL
-);
+        "Create Project", GTK_WINDOW(app->main_win),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        "Cancel", GTK_RESPONSE_CANCEL,
+        "Create", GTK_RESPONSE_OK,
+        NULL
+    );
 
-GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-GtkWidget *grid = gtk_grid_new();
-gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
-gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
-gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
-gtk_container_add(GTK_CONTAINER(content), grid);
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget *ename = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(ename), "Project name");
+    gtk_box_pack_start(GTK_BOX(box), ename, FALSE, FALSE, 8);
+    gtk_widget_show_all(dialog);
 
-GtkWidget *e_title = gtk_entry_new();
-GtkWidget *e_desc = gtk_entry_new();
-GtkWidget *e_assignee = gtk_entry_new();
-GtkWidget *e_start = gtk_entry_new();
-GtkWidget *e_end = gtk_entry_new();
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
+        const char *name = gtk_entry_get_text(GTK_ENTRY(ename));
+        if (!name || !*name) {
+            show_error(GTK_WINDOW(app->main_win), "Project name is required");
+        } else {
+            char line[BUF_SIZE];
+            snprintf(line, sizeof(line), "%s|%s\n", CMD_CREATE_PROJECT, name);
 
-gtk_entry_set_placeholder_text(GTK_ENTRY(e_title), "Title");
-gtk_entry_set_placeholder_text(GTK_ENTRY(e_desc), "Description");
-gtk_entry_set_placeholder_text(GTK_ENTRY(e_assignee), "Assignee username");
-gtk_entry_set_placeholder_text(GTK_ENTRY(e_start), "Start date YYYY-MM-DD");
-gtk_entry_set_placeholder_text(GTK_ENTRY(e_end), "End date YYYY-MM-DD");
-
-gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Title"), 0, 0, 1, 1);
-gtk_grid_attach(GTK_GRID(grid), e_title, 1, 0, 1, 1);
-gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Description"), 0, 1, 1, 1);
-gtk_grid_attach(GTK_GRID(grid), e_desc, 1, 1, 1, 1);
-gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Assignee"), 0, 2, 1, 1);
-gtk_grid_attach(GTK_GRID(grid), e_assignee, 1, 2, 1, 1);
-gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Start"), 0, 3, 1, 1);
-gtk_grid_attach(GTK_GRID(grid), e_start, 1, 3, 1, 1);
-gtk_grid_attach(GTK_GRID(grid), gtk_label_new("End"), 0, 4, 1, 1);
-gtk_grid_attach(GTK_GRID(grid), e_end, 1, 4, 1, 1);
-
-gtk_widget_show_all(dialog);
-
-int resp = gtk_dialog_run(GTK_DIALOG(dialog));
-if (resp == GTK_RESPONSE_OK) {
-    const char *title = gtk_entry_get_text(GTK_ENTRY(e_title));
-    const char *desc = gtk_entry_get_text(GTK_ENTRY(e_desc));
-    const char *assignee = gtk_entry_get_text(GTK_ENTRY(e_assignee));
-    const char *start = gtk_entry_get_text(GTK_ENTRY(e_start));
-    const char *end = gtk_entry_get_text(GTK_ENTRY(e_end));
-
-    if (!title || !*title) {
-        show_error(GTK_WINDOW(app->main_win), "Task title is required");
-    } else if (!assignee || !*assignee) {
-        show_error(GTK_WINDOW(app->main_win), "Assignee username is required");
-    } else if (!start || !*start || !end || !*end) {
-        show_error(GTK_WINDOW(app->main_win), "Start/End date is required (YYYY-MM-DD)");
-    } else {
-        char line[BUF_SIZE];
-        int pid = combo_get_selected_project_id(GTK_COMBO_BOX_TEXT(app->combo_projects_tasks));
-if (pid <= 0) { show_error(GTK_WINDOW(app->main_win), "Select a project first"); gtk_widget_destroy(dialog); return; }
-snprintf(line, sizeof(line), "%s|%d|%s|%s|%s|%s|%s\n",
-         CMD_CREATE_TASK, pid, title, desc ? desc : "", assignee, start, end);
-
-char payload[BUF_SIZE] = {0};
-int code = net_request(app->sockfd, line, payload, sizeof(payload));
-if (code != 0) show_error(GTK_WINDOW(app->main_win), payload[0] ? payload : "Create task failed");
-else {
-    tasks_load(app, pid);
-    gantt_load(app, pid); // náº¿u cÃ³ gantt
-}
+            char payload[BUF_SIZE] = {0};
+            int code = net_request(app->sockfd, line, payload, sizeof(payload));
+            if (code != 0) {
+                show_error(GTK_WINDOW(app->main_win),
+                           payload[0] ? payload : "Create project failed");
+            } else {
+                projects_load(app);    // reload bảng + combobox
+            }
+        }
     }
-}
 
-gtk_widget_destroy(dialog);
-
+    gtk_widget_destroy(dialog);
 }
 
 static void on_project_invite(GtkButton *btn, gpointer user_data) {
@@ -289,6 +272,7 @@ static void tasks_load(App *app, int project_id) {
     // lines: id|title|Assignee:xx|Status:..|Start:..|End:..
     char *copy = g_strdup(payload);
     char *saveptr = NULL;
+    int row_no = 0;
     for (char *ln = strtok_r(copy, "\n", &saveptr); ln; ln = strtok_r(NULL, "\n", &saveptr)) {
         if (!*ln) continue;
         char *parts[8] = {0};
@@ -296,14 +280,17 @@ static void tasks_load(App *app, int project_id) {
         char *sv2=NULL;
         for (char *p=strtok_r(ln, "|", &sv2); p && k<8; p=strtok_r(NULL,"|",&sv2)) parts[k++]=p;
         if (k < 2) continue;
-        int id = atoi(parts[0]);
-        const char *title = parts[1];
         // sau khi split parts[]
-const char *assignee_raw = (k>=3)? parts[2] : "Assignee:None";
-const char *status_raw   = (k>=4)? parts[3] : "Status:NOT_STARTED";
-const char *progress_raw = (k>=5)? parts[4] : "Progress:0";
-const char *start_raw    = (k>=6)? parts[5] : "Start:";
-const char *end_raw      = (k>=7)? parts[6] : "End:";
+       // parts[0]..parts[k-1]
+int id = atoi(parts[0]);
+const char *title = parts[1];
+
+const char *assignee_raw  = (k >= 3) ? parts[2] : "Assignee:None";
+const char *status_raw    = (k >= 4) ? parts[3] : "Status:NOT_STARTED";
+const char *progress_raw  = (k >= 5) ? parts[4] : "Progress:0";
+const char *start_raw     = (k >= 6) ? parts[5] : "Start:";
+const char *end_raw       = (k >= 7) ? parts[6] : "End:";
+
 
 // cáº¯t prefix
 const char *assignee = assignee_raw;
@@ -334,19 +321,23 @@ while (*start == ' ') start++;
 while (*end == ' ') end++;
 
 // build chuá»—i hiá»ƒn thá»‹ cho cá»™t 3
-char progress_display[32];
-snprintf(progress_display, sizeof(progress_display), "%s%%", *progress ? progress : "0");
-
+char status_display[64];
+snprintf(status_display, sizeof(status_display),
+         "%s (%s%%)",
+         (status   && *status)   ? status   : "UNKNOWN",
+         (progress && *progress) ? progress : "0");
+row_no++;
 GtkTreeIter it;
 gtk_list_store_append(app->task_store, &it);
 gtk_list_store_set(app->task_store, &it,
-    0, id,
-    1, title,
-    2, assignee,
-    3, progress_display,  // cá»™t Status giá» lÃ  % tiáº¿n Ä‘á»™
-    4, start,
-    5, end,
-    -1);
+        0, id,          // real id (ẩn)
+        1, row_no,      // No 1,2,3...
+        2, title,
+        3, assignee,
+        4, status_display,
+        5, start,
+        6, end,
+        -1);
     }
     g_free(copy);
 }
@@ -370,7 +361,7 @@ static int get_selected_task_id(App *app) {
     GtkTreeIter it;
     if (gtk_tree_selection_get_selected(sel, &model, &it)) {
         int id;
-        gtk_tree_model_get(model, &it, 0, &id, -1);
+        gtk_tree_model_get(model, &it, 0, &id, -1);  // lấy col 0
         return id;
     }
     return -1;
@@ -786,7 +777,6 @@ static void on_task_update_status(GtkButton *btn, gpointer user_data) {
     gtk_widget_destroy(dialog);
 }
 
-
 static void on_task_set_dates(GtkButton *btn, gpointer user_data) {
     (void)btn;
     App *app = user_data;
@@ -1001,14 +991,16 @@ cairo_set_source_rgb(cr, 0,0,0);
 cairo_set_font_size(cr, 12);
 
     // -------- task --------
+    int row_no = 0;
     for (guint i = 0; i < items->len; i++) {
         T t = g_array_index(items, T, i);
+        row_no++;
         double y = top + AXIS_H + i*row_h;
 
         // label: id, title, %, assignee
         char label[200];
         snprintf(label, sizeof(label), "#%d %s (%d%%, %s)",
-                 t.id, t.title, t.status, t.assignee);
+                 row_no, t.title, t.status, t.assignee);
         cairo_move_to(cr, 10, y+12);
         cairo_show_text(cr, label);
 
@@ -1078,6 +1070,9 @@ static void chat_add_message(App *app,
     gtk_widget_set_margin_start(lbl_name, 6);
     gtk_widget_set_margin_end(lbl_name, 6);
 
+    GtkStyleContext *ctx_name = gtk_widget_get_style_context(lbl_name);
+    gtk_style_context_add_class(ctx_name, "chat-name");
+
     PangoAttrList *name_attrs = pango_attr_list_new();
     pango_attr_list_insert(name_attrs, pango_attr_scale_new(PANGO_SCALE_SMALL));
     gtk_label_set_attributes(GTK_LABEL(lbl_name), name_attrs);
@@ -1085,7 +1080,6 @@ static void chat_add_message(App *app,
 
     GdkRGBA gray_name;
     gdk_rgba_parse(&gray_name, "#aaaaaa");
-    gtk_widget_override_color(lbl_name, GTK_STATE_FLAG_NORMAL, &gray_name);
 
     // ----- nội dung (wrap tự xuống dòng) -----
     GtkWidget *lbl_msg = gtk_label_new(content);
@@ -1101,6 +1095,8 @@ static void chat_add_message(App *app,
 
     // ----- timestamp nhỏ ở góc dưới -----
     GtkWidget *lbl_ts = gtk_label_new(ts);
+    GtkStyleContext *ctx_ts = gtk_widget_get_style_context(lbl_ts);
+    gtk_style_context_add_class(ctx_ts, "chat-ts");
 
 // căn tuỳ user: mình bên phải, người khác bên trái
 if (is_me) {
@@ -1122,7 +1118,6 @@ gtk_widget_set_margin_bottom(lbl_ts, 2);
 
     GdkRGBA gray_ts;
     gdk_rgba_parse(&gray_ts, "#999999");
-    gtk_widget_override_color(lbl_ts, GTK_STATE_FLAG_NORMAL, &gray_ts);
 
     // ghép vào bubble: Tên -> Nội dung -> Timestamp
     gtk_box_pack_start(GTK_BOX(bubble), lbl_name, FALSE, FALSE, 0);
@@ -1314,17 +1309,26 @@ static GtkWidget* build_tasks_tab(App *app) {
     g_signal_connect(btn_comments, "clicked", G_CALLBACK(on_task_comments), app);
     g_signal_connect(btn_files, "clicked", G_CALLBACK(on_task_attachments), app);
 
-    app->task_store = gtk_list_store_new(6,
-        G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING,
-        G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
-    app->task_view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(app->task_store));
+    app->task_store = gtk_list_store_new(7,
+    G_TYPE_INT,    // 0: real id (ẩn)
+    G_TYPE_INT,    // 1: No (1,2,3...)
+    G_TYPE_STRING, // 2: Title
+    G_TYPE_STRING, // 3: Assignee
+    G_TYPE_STRING, // 4: Status
+    G_TYPE_STRING, // 5: Start
+    G_TYPE_STRING  // 6: End
+);
+app->task_view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(app->task_store));
 
-    const char *headers[] = {"ID", "Title", "Assignee", "Status", "Start", "End"};
-    for (int i=0;i<6;i++) {
-        GtkCellRenderer *r = gtk_cell_renderer_text_new();
-        GtkTreeViewColumn *c = gtk_tree_view_column_new_with_attributes(headers[i], r, "text", i, NULL);
-        gtk_tree_view_append_column(GTK_TREE_VIEW(app->task_view), c);
-    }
+const char *headers[] = {"ID", "Title", "Assignee", "Status", "Start", "End"};
+for (int i = 0; i < 6; i++) {
+    GtkCellRenderer *r = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn *c =
+        gtk_tree_view_column_new_with_attributes(headers[i], r,
+                                                 "text", i+1, NULL); // dùng cột 1..6
+    gtk_tree_view_append_column(GTK_TREE_VIEW(app->task_view), c);
+}
+
 
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_container_add(GTK_CONTAINER(scroll), app->task_view);
@@ -1512,6 +1516,8 @@ static void build_login_window(App *app) {
 
 int main(int argc, char **argv) {
     gtk_init(&argc, &argv);
+
+    init_css(); 
 
     g_object_set(gtk_settings_get_default(),
              "gtk-application-prefer-dark-theme",
